@@ -1,0 +1,281 @@
+#!/bin/bash
+
+# the file with all the function declarations and variables in it
+#modify when we decide on a location to set this accordingly so it can be run from anywhere.
+CONFIG_FILE=./pnoc_activations.conf
+
+
+#for getting error codes correctly from pipes.
+set -o pipefail
+
+
+##source the configuration file.
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+else
+    echo "config file not found"
+    exit 1
+fi
+
+
+## get commandline arguements and set some variables.
+do_getopts "$@";
+
+shift $(($OPTIND - 1))
+
+
+##sets the date variable , useed for setting date_subset format
+
+
+do_setdatevar;
+
+##this sets the build directory to austin build directory or allen build directory
+
+do_setbuilddir;
+
+##get external ip from $externalintf
+
+do_getexternalip;
+
+
+##unzip zip file to a  dir in build directory.note i should check if overwriting a directory which isnt done yet.
+
+#need to give the option to skip this file
+if [[ "$zipfilename" != "NOTSET" ]] ; then
+
+  if [[  -d "$unzipfromdir"/"$date"_"$subset" ]] ; then
+    echo "subset directory already exists! skipping unzip."
+    echo
+  else
+    do_unzip;
+  fi ;
+else
+  echo "skipping unzip since no customer dlci zipfile was specified"
+  echo
+fi ; 
+
+
+## makes the directories activationFiles and activationLogs
+if [[ -d "$builddir"/activationLogs ]] ; then
+  echo "skipping makedir activationLogs used for storing activation logs. directory exists."
+  echo
+else
+
+  do_makeactivationLogs;
+fi ;
+
+
+if [[ -d "$builddir"/activationFiles ]] ; then
+  echo "skipping makedir activationFiles used for storing activation files. directory exists. "
+  echo
+else
+
+do_makeactivationFiles;
+fi ;
+
+## move zipfile to subset to archive it. 
+if [[ -f "$builddir"/"$zipfilename" ]] ; then
+  echo "skipping move of customer dlci zipfile to subset folder. file exists."
+  echo
+elif [[ "$zipfilename" == "NOTSET" ]] ; then
+  echo "skipping move of customer dlci zipfile to subset folder. no file specified"
+  echo
+else  
+  do_movezipfileforarchiving;
+fi ; 
+
+
+
+##do change to perl directory for connect_qos
+ do_cdperlscripts;
+
+##do connect test
+##need to test if variables are set to NOTSET
+##need to test if outputlog exists and prompt to skip the test.
+
+while true ; do 
+  if [[ -e "${builddir}/activationLogs/connect_test-out" ]] ; then
+    echo "connect_qos-out exists. skip connect test? enter yes or YES to skip"
+    echo "enter no or NO to run connect test"
+    read yesno
+    if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then 
+      echo "skipping connect test"
+	  break
+    elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+      echo "executing connect test"
+    	do_connectqostest;
+	    break
+    else
+      echo "invalid entry. enter yes or no."
+    fi; 
+  else 
+    echo "connect test not previously run. executing"
+	do_connectqostest;
+	break
+  fi;
+done
+
+##do vista discovery
+##need to test if variables are set to NOTSET
+while true ; do 
+	if [[ -e "${builddir}/activationLogs/vista_discovery-out" ]] ; then
+		echo "vista_discovery-out exists. skip VistaDiscovery? enter yes or YES to skip"
+		echo "enter no or NO to run VistaDiscovery again"
+		read yesno
+		if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then 
+			echo "skipping VistaDiscovery"
+			break
+		elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+			echo "executing VistaDiscovery"
+			do_vistadiscovery;
+			while true ; do
+				echo "this is a pause in the script to give you a chance to validate VistaDiscovery."
+				echo "when finished enter yes or YES to continue. to exit the script enter no or NO"
+				echo "to rerun VistaDiscovery enter rerun or RERUN"
+				read yesno
+				if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then
+					echo "continuing..."
+					break
+				elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+					echo "exiting"
+					exit 0
+				elif [[ "$yesno" == "rerun" || "$yesno" == "RERUN" ]] ; then
+					do_vistadiscovery;
+			
+				else
+					echo "invalid entry. enter yes or no or rerun"
+				fi;
+			done
+			do_getautodiscofile;    #get the autodiscovery file from Vista_discovery tee output.
+			do_vdiscvalidation;     #get the device count to validate Vdisc.
+			break
+		else
+			echo "invalid entry. enter yes or no."  
+		fi;
+	else
+		echo "vistadiscovery not previously run. executing."
+		echo "executing VistaDiscovery"
+		do_vistadiscovery;
+		while true ; do
+			echo "this is a pause in the script to give you a chance to validate VistaDiscovery."
+			echo "when finished enter yes or YES to continue. to exit the script enter no or NO"
+			echo "to rerun VistaDiscovery enter rerun or RERUN"
+			read yesno
+			if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then
+				echo "continuing..."
+				break
+			elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+				echo "exiting"
+				exit 0
+			elif [[ "$yesno" == "rerun" || "$yesno" == "RERUN" ]] ; then
+				do_vistadiscovery;
+				do_getautodiscofile;
+				do_vdiscvalidation;
+			else
+				echo "invalid entry. enter yes or no or rerun"
+			fi;
+		done
+		do_getautodiscofile;    #get the autodiscovery file from Vista_discovery tee output.
+		do_vdiscvalidation;     #get the device count to validate Vdisc.
+	fi;
+done
+
+
+do_getautodiscofile;
+  
+
+## check the integrity of the files moved for cisco discovery using cmp
+
+#do_checkintegretyofmoveforcdisc;
+
+## do cisco discovery.
+##need to test if variables are set to NOTSET
+
+## removing old files from CiscoDiscovery
+do_cleanupbeforecdisc;
+
+
+## move files for cisco discovery, into the cisco discovery folder.
+
+do_movefilesforcdisc;
+
+
+while true ; do 
+	if [[ -e "${builddir}/activationLogs/cisco_discovery-out" ]] ; then
+		echo "cisco_discovery-out exists. skip CiscoDiscovery? enter yes or YES to skip"
+		echo "enter no or NO to run CiscoDiscovery"
+		read yesno
+		if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then 
+			echo "skipping CiscoDiscovery"
+			break
+		elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+			echo "executing CiscoDiscovery"
+			do_ciscodiscovery;
+			while true ; do
+			echo " a small pause after cisco discovery to validate CiscoDiscovery."
+			echo " enter yes or YES to continue, no or NO to exit."
+			echo " to rerun CiscoDiscovery enter rerun or RERUN"
+			read yesno
+			if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then
+				echo "continuing..."
+				break
+			elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+				echo "exiting"
+				exit 0
+			elif [[ "$yesno" == "rerun" || "$yesno" == "RERUN" ]] ; then
+				do_ciscodiscovery;
+				#do_checkforoutputfile;	## checks for Topology_intf_out.xml or Topology_out.xml
+				do_cdiscvalidation;
+			else
+				echo "invalid entry. enter yes or no or rerun"
+			fi;
+			done
+			#do_checkforoutputfile;	## checks for Topology_intf_out.xml or Topology_out.xml
+			do_cdiscvalidation;
+			break
+		else
+			echo "invalid entry. enter yes or no."
+		fi; 
+		else
+			echo "executing CiscoDiscovery"
+			do_ciscodiscovery;
+			while true ; do
+			echo " a small pause after cisco discovery to validate CiscoDiscovery."
+			echo " enter yes or YES to continue, no or NO to exit."
+			echo " to rerun CiscoDiscovery enter rerun or RERUN"
+			read yesno
+			if [[ "$yesno" == "yes" || "$yesno" == "YES" ]] ; then
+				echo "continuing..."
+				break
+			elif [[ "$yesno" == "no" || "$yesno" == "NO" ]] ; then
+				echo "exiting"
+				exit 0
+			elif [[ "$yesno" == "rerun" || "$yesno" == "RERUN" ]] ; then
+				do_ciscodiscovery;
+				#do_checkforoutputfile;	## checks for Topology_intf_out.xml or Topology_out.xml
+				#do_cdiscvalidation;
+			else
+				echo "invalid entry. enter yes or no or rerun"
+			fi;
+		done
+		#do_checkforoutputfile;	## checks for Topology_intf_out.xml or Topology_out.xml
+		#do_cdiscvalidation;
+	fi;
+done
+
+
+
+## do move files from cisco discovery to subset directory
+
+do_movefilesfromcdisc;
+
+
+
+
+## do move vista discovery server logs to activationLogs
+
+do_archivevdiscservlogs;
+
+do_cdiscvalidation;
+
